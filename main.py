@@ -4,7 +4,7 @@ from typing import List
 import yfinance as yf
 import pandas as pd
 from ta.momentum import RSIIndicator
-from ta.trend import MACD, ADXIndicator
+from ta.trend import MACD, SMAIndicator, ADXIndicator
 from ta.volatility import BollingerBands
 
 app = FastAPI()
@@ -18,55 +18,61 @@ def analyze_stocks(request: StockRequest):
 
     for symbol in request.tickers:
         try:
-            print(f"Analyzing {symbol}")
             stock = yf.Ticker(symbol)
             hist = stock.history(period="1mo", interval="1d")
 
-            # Skip if there's not enough data for technical indicators
-            if hist.empty or len(hist) < 14:
-                print(f"Insufficient data for {symbol}")
+            if hist.empty or len(hist) < 20:
                 continue
 
-            # RSI Calculation
-            rsi_indicator = RSIIndicator(close=hist["Close"], window=14)
-            hist["RSI"] = rsi_indicator.rsi()
-            latest_rsi = hist["RSI"].dropna().iloc[-1]
+            hist["RSI"] = RSIIndicator(close=hist["Close"], window=14).rsi()
+            hist["SMA_50"] = SMAIndicator(close=hist["Close"], window=50).sma_indicator()
+            hist["SMA_200"] = SMAIndicator(close=hist["Close"], window=200).sma_indicator()
+            macd = MACD(close=hist["Close"])
+            hist["MACD"] = macd.macd()
+            hist["MACD_signal"] = macd.macd_signal()
+            hist["ADX"] = ADXIndicator(high=hist["High"], low=hist["Low"], close=hist["Close"]).adx()
+            bollinger = BollingerBands(close=hist["Close"])
+            hist["bb_bbm"] = bollinger.bollinger_mavg()
+            hist["bb_bbh"] = bollinger.bollinger_hband()
+            hist["bb_bbl"] = bollinger.bollinger_lband()
+            hist["Volume"] = hist["Volume"]
 
-            # MACD Calculation
-            macd_indicator = MACD(close=hist["Close"])
-            hist["MACD"] = macd_indicator.macd()
-            hist["MACD_SIGNAL"] = macd_indicator.macd_signal()
-            macd_cross = hist["MACD"].iloc[-1] > hist["MACD_SIGNAL"].iloc[-1]
+            latest = hist.iloc[-1]
+            price = stock.info.get("currentPrice", None)
+            pe_ratio = stock.info.get("trailingPE", None)
+            name = stock.info.get("shortName", symbol)
 
-            # ADX Calculation
-            adx = ADXIndicator(high=hist["High"], low=hist["Low"], close=hist["Close"])
-            latest_adx = adx.adx().iloc[-1]
+            rsi_score = 1 if latest["RSI"] < 30 else -1 if latest["RSI"] > 70 else 0
+            macd_score = 1 if latest["MACD"] > latest["MACD_signal"] else -1
+            adx_score = 1 if latest["ADX"] > 25 else 0
+            bb_score = 1 if latest["Close"] < latest["bb_bbl"] else -1 if latest["Close"] > latest["bb_bbh"] else 0
+            sma_score = 1 if latest["SMA_50"] > latest["SMA_200"] else -1
+            total_score = rsi_score + macd_score + adx_score + bb_score + sma_score
 
-            # Bollinger Bands
-            bb = BollingerBands(close=hist["Close"])
-            bb_upper = bb.bollinger_hband().iloc[-1]
-            bb_lower = bb.bollinger_lband().iloc[-1]
-            bb_mid = bb.bollinger_mavg().iloc[-1]
-            price = hist["Close"].iloc[-1]
-
-            # Signal logic
-            signal = "HOLD"
-            if latest_rsi < 30 and macd_cross and price < bb_mid:
+            if total_score >= 3:
+                signal = "STRONG BUY"
+            elif total_score >= 1:
                 signal = "BUY"
-            elif latest_rsi > 70 and not macd_cross and price > bb_mid:
+            elif total_score <= -2:
                 signal = "SELL"
+            else:
+                signal = "HOLD"
 
-            info = stock.info
             results.append({
-                "name": info.get("shortName", symbol),
+                "name": name,
                 "symbol": symbol,
-                "price": round(info.get("currentPrice", price), 2),
-                "pe_ratio": round(info.get("trailingPE", 0), 2),
-                "rsi": round(latest_rsi, 2),
-                "adx": round(latest_adx, 2),
-                "macd_cross": macd_cross,
-                "bollinger_upper": round(bb_upper, 2),
-                "bollinger_lower": round(bb_lower, 2),
+                "price": price,
+                "pe_ratio": pe_ratio,
+                "rsi": round(latest["RSI"], 2),
+                "macd": round(latest["MACD"], 2),
+                "macd_signal": round(latest["MACD_signal"], 2),
+                "adx": round(latest["ADX"], 2),
+                "bb_upper": round(latest["bb_bbh"], 2),
+                "bb_lower": round(latest["bb_bbl"], 2),
+                "sma_50": round(latest["SMA_50"], 2),
+                "sma_200": round(latest["SMA_200"], 2),
+                "volume": int(latest["Volume"]),
+                "strategy_score": total_score,
                 "signal": signal
             })
 
