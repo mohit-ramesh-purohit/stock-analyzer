@@ -1,83 +1,68 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import List
 import yfinance as yf
 import pandas as pd
 from ta.momentum import RSIIndicator
 from ta.trend import MACD, SMAIndicator, ADXIndicator
 from ta.volatility import BollingerBands
+import logging
 
 app = FastAPI()
 
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 class StockRequest(BaseModel):
-    tickers: List[str]
+    tickers: list
 
 @app.post("/analyze")
 def analyze_stocks(request: StockRequest):
     results = []
-
     for symbol in request.tickers:
         try:
+            logger.info(f"Analyzing {symbol}")
             stock = yf.Ticker(symbol)
             hist = stock.history(period="1mo", interval="1d")
-
-            if hist.empty or len(hist) < 20:
+            
+            if hist is None or hist.empty or len(hist) < 14:
+                logger.warning(f"Insufficient data for {symbol}")
                 continue
 
+            # Indicators
             hist["RSI"] = RSIIndicator(close=hist["Close"], window=14).rsi()
             hist["SMA_50"] = SMAIndicator(close=hist["Close"], window=50).sma_indicator()
             hist["SMA_200"] = SMAIndicator(close=hist["Close"], window=200).sma_indicator()
-            macd = MACD(close=hist["Close"])
-            hist["MACD"] = macd.macd()
-            hist["MACD_signal"] = macd.macd_signal()
+            hist["MACD"] = MACD(close=hist["Close"]).macd()
             hist["ADX"] = ADXIndicator(high=hist["High"], low=hist["Low"], close=hist["Close"]).adx()
-            bollinger = BollingerBands(close=hist["Close"])
-            hist["bb_bbm"] = bollinger.bollinger_mavg()
-            hist["bb_bbh"] = bollinger.bollinger_hband()
-            hist["bb_bbl"] = bollinger.bollinger_lband()
-            hist["Volume"] = hist["Volume"]
+            bb = BollingerBands(close=hist["Close"])
+            hist["BB_upper"] = bb.bollinger_hband()
+            hist["BB_lower"] = bb.bollinger_lband()
 
             latest = hist.iloc[-1]
-            price = stock.info.get("currentPrice", None)
-            pe_ratio = stock.info.get("trailingPE", None)
-            name = stock.info.get("shortName", symbol)
+            info = stock.info
 
-            rsi_score = 1 if latest["RSI"] < 30 else -1 if latest["RSI"] > 70 else 0
-            macd_score = 1 if latest["MACD"] > latest["MACD_signal"] else -1
-            adx_score = 1 if latest["ADX"] > 25 else 0
-            bb_score = 1 if latest["Close"] < latest["bb_bbl"] else -1 if latest["Close"] > latest["bb_bbh"] else 0
-            sma_score = 1 if latest["SMA_50"] > latest["SMA_200"] else -1
-            total_score = rsi_score + macd_score + adx_score + bb_score + sma_score
-
-            if total_score >= 3:
-                signal = "STRONG BUY"
-            elif total_score >= 1:
+            signal = "HOLD"
+            if latest["RSI"] < 30 and latest["MACD"] > 0 and latest["ADX"] > 20:
                 signal = "BUY"
-            elif total_score <= -2:
+            elif latest["RSI"] > 70 and latest["MACD"] < 0:
                 signal = "SELL"
-            else:
-                signal = "HOLD"
 
             results.append({
-                "name": name,
+                "name": info.get("shortName", symbol),
                 "symbol": symbol,
-                "price": price,
-                "pe_ratio": pe_ratio,
+                "price": info.get("currentPrice"),
+                "pe_ratio": info.get("trailingPE"),
                 "rsi": round(latest["RSI"], 2),
-                "macd": round(latest["MACD"], 2),
-                "macd_signal": round(latest["MACD_signal"], 2),
-                "adx": round(latest["ADX"], 2),
-                "bb_upper": round(latest["bb_bbh"], 2),
-                "bb_lower": round(latest["bb_bbl"], 2),
-                "sma_50": round(latest["SMA_50"], 2),
-                "sma_200": round(latest["SMA_200"], 2),
-                "volume": int(latest["Volume"]),
-                "strategy_score": total_score,
+                "sma_50": round(latest["SMA_50"], 2) if not pd.isna(latest["SMA_50"]) else None,
+                "sma_200": round(latest["SMA_200"], 2) if not pd.isna(latest["SMA_200"]) else None,
+                "macd": round(latest["MACD"], 2) if not pd.isna(latest["MACD"]) else None,
+                "adx": round(latest["ADX"], 2) if not pd.isna(latest["ADX"]) else None,
+                "bb_upper": round(latest["BB_upper"], 2) if not pd.isna(latest["BB_upper"]) else None,
+                "bb_lower": round(latest["BB_lower"], 2) if not pd.isna(latest["BB_lower"]) else None,
                 "signal": signal
             })
-
         except Exception as e:
-            print(f"Error analyzing {symbol}: {e}")
+            logger.error(f"Error analyzing {symbol}: {e}")
             continue
-
     return {"analysis": results}
