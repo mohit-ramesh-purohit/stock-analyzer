@@ -1,68 +1,79 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
+from typing import List
 import yfinance as yf
 import pandas as pd
-from ta.momentum import RSIIndicator
-from ta.trend import MACD, SMAIndicator, ADXIndicator
-from ta.volatility import BollingerBands
 import logging
+from ta.momentum import RSIIndicator
+from ta.trend import MACD, SMAIndicator
+from ta.volatility import BollingerBands
+from ta.trend import ADXIndicator
 
 app = FastAPI()
 
-# Setup logging
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 class StockRequest(BaseModel):
-    tickers: list
+    tickers: List[str]
 
 @app.post("/analyze")
 def analyze_stocks(request: StockRequest):
     results = []
+
     for symbol in request.tickers:
         try:
-            logger.info(f"Analyzing {symbol}")
+            logging.info(f"Analyzing {symbol}")
             stock = yf.Ticker(symbol)
             hist = stock.history(period="1mo", interval="1d")
-            
-            if hist is None or hist.empty or len(hist) < 14:
-                logger.warning(f"Insufficient data for {symbol}")
+
+            if hist.empty or len(hist) < 20:
+                logging.warning(f"Not enough data to analyze {symbol}")
                 continue
 
-            # Indicators
-            hist["RSI"] = RSIIndicator(close=hist["Close"], window=14).rsi()
-            hist["SMA_50"] = SMAIndicator(close=hist["Close"], window=50).sma_indicator()
-            hist["SMA_200"] = SMAIndicator(close=hist["Close"], window=200).sma_indicator()
-            hist["MACD"] = MACD(close=hist["Close"]).macd()
-            hist["ADX"] = ADXIndicator(high=hist["High"], low=hist["Low"], close=hist["Close"]).adx()
-            bb = BollingerBands(close=hist["Close"])
-            hist["BB_upper"] = bb.bollinger_hband()
-            hist["BB_lower"] = bb.bollinger_lband()
+            hist.dropna(inplace=True)
 
-            latest = hist.iloc[-1]
+            # Indicators
+            rsi = RSIIndicator(close=hist["Close"], window=14).rsi()
+            macd_line = MACD(close=hist["Close"]).macd()
+            sma_50 = SMAIndicator(close=hist["Close"], window=50).sma_indicator()
+            sma_200 = SMAIndicator(close=hist["Close"], window=200).sma_indicator()
+            adx = ADXIndicator(high=hist["High"], low=hist["Low"], close=hist["Close"]).adx()
+            bb = BollingerBands(close=hist["Close"], window=20)
+            upper_band = bb.bollinger_hband()
+            lower_band = bb.bollinger_lband()
+            volume = hist["Volume"]
+
+            # Current values
+            latest_rsi = round(rsi.iloc[-1], 2)
+            latest_macd = round(macd_line.iloc[-1], 2)
+            latest_adx = round(adx.iloc[-1], 2)
+            current_price = round(hist["Close"].iloc[-1], 2)
+            avg_volume = int(volume.mean())
+
             info = stock.info
 
-            signal = "HOLD"
-            if latest["RSI"] < 30 and latest["MACD"] > 0 and latest["ADX"] > 20:
-                signal = "BUY"
-            elif latest["RSI"] > 70 and latest["MACD"] < 0:
-                signal = "SELL"
+            def determine_signal():
+                if latest_rsi < 30 and latest_macd > 0 and current_price < lower_band.iloc[-1]:
+                    return "BUY"
+                elif latest_rsi > 70 or current_price > upper_band.iloc[-1]:
+                    return "SELL"
+                else:
+                    return "HOLD"
 
             results.append({
                 "name": info.get("shortName", symbol),
                 "symbol": symbol,
-                "price": info.get("currentPrice"),
-                "pe_ratio": info.get("trailingPE"),
-                "rsi": round(latest["RSI"], 2),
-                "sma_50": round(latest["SMA_50"], 2) if not pd.isna(latest["SMA_50"]) else None,
-                "sma_200": round(latest["SMA_200"], 2) if not pd.isna(latest["SMA_200"]) else None,
-                "macd": round(latest["MACD"], 2) if not pd.isna(latest["MACD"]) else None,
-                "adx": round(latest["ADX"], 2) if not pd.isna(latest["ADX"]) else None,
-                "bb_upper": round(latest["BB_upper"], 2) if not pd.isna(latest["BB_upper"]) else None,
-                "bb_lower": round(latest["BB_lower"], 2) if not pd.isna(latest["BB_lower"]) else None,
-                "signal": signal
+                "price": current_price,
+                "pe_ratio": info.get("trailingPE", None),
+                "rsi": latest_rsi,
+                "macd": latest_macd,
+                "adx": latest_adx,
+                "volume_avg": avg_volume,
+                "signal": determine_signal()
             })
+
         except Exception as e:
-            logger.error(f"Error analyzing {symbol}: {e}")
+            logging.error(f"Error analyzing {symbol}: {e}")
             continue
+
     return {"analysis": results}
