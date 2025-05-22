@@ -1,17 +1,9 @@
-# Stock Analyzer API
-
-This is a FastAPI-based stock analysis tool that uses yFinance and several technical indicators to generate buy/hold/sell signals.
-
-## Features
-
-- Technical indicators: SMA, EMA, RSI, MACD, BBW, ADX, ATR%, MFI, OBV, Stochastic Oscillator, CCI, Williams %R, Supertrend, Donchian Channel, RVI, Ultimate Oscillator
-- Strategy scoring logic
-- FastAPI + Swagger UI
-- Render + GitHub deployment-ready
-
-## Installation
-
-### 1. Clone the repo
-```bash
-git clone https://github.com/your-username/stock-analyzer.git
-cd stock-analyzer
+services:
+  - type: web
+    name: stock-analyzer
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn main:app --host 0.0.0.0 --port 10000"
+    envVars:
+      - key: PORT
+        value: 10000
